@@ -7,6 +7,8 @@ An AI-powered tool that identifies instruments and synthesizer patches in audio 
 - **Zero-shot identification**: No training required - works out of the box
 - **Source separation**: Automatically separates audio into vocals, drums, bass, and other instruments
 - **200+ instrument labels**: Comprehensive database of acoustic instruments and synth patches
+- **SoundFont support**: Batch-render patches from SF2 files for exact timbral matches
+- **Synthesizer-specific filtering**: Target specific keyboard models (PSR-2100, Korg Triton, etc.)
 - **Fast search**: FAISS-powered nearest neighbor search for real-time performance
 - **Multiple interfaces**: Command-line tool and web interface
 - **Extensible**: Easy to add new instruments or audio samples
@@ -70,6 +72,8 @@ instrument_patch_identifier/
 ├── src/                      # Source code
 │   ├── text_db.py           # Text embedding creation
 │   ├── audio_db.py          # Audio embedding creation
+│   ├── soundfont_renderer.py # SoundFont batch rendering
+│   ├── synth_db.py          # Synthesizer-specific databases
 │   ├── build_index.py       # FAISS index building
 │   ├── separate.py          # Audio source separation
 │   ├── inference.py         # Main inference pipeline
@@ -91,6 +95,12 @@ python src/ui.py cli song.mp3 --no-separation
 
 # Use different separation model
 python src/ui.py cli song.mp3 --model 2stems
+
+# Filter by specific synthesizer
+python src/ui.py cli song.mp3 --synthesizer PSR-2100
+
+# List available synthesizers
+python src/ui.py cli --list-synthesizers
 
 # Save results to JSON
 python src/ui.py cli song.mp3 --output results.json --verbose
@@ -121,7 +131,8 @@ identifier = InstrumentIdentifier()
 results = identifier.identify_instruments(
     "song.mp3",
     use_separation=True,
-    separation_model="4stems"
+    separation_model="4stems",
+    synthesizer_filter="PSR-2100"  # Optional: filter by synthesizer
 )
 
 # Print top instruments
@@ -163,6 +174,67 @@ The tool outputs JSON with detailed analysis:
   }
 }
 ```
+
+## 🎹 SoundFont Workflow (Synthesizer-Specific Identification)
+
+For the most accurate timbral matches, you can create synthesizer-specific databases using SoundFont files:
+
+### Step 1: Get SoundFont Files
+
+Download SF2 files for your target synthesizers:
+- **PSR-2100**: Search for "PSR-2100.sf2" or "Yamaha PSR-2100 SoundFont"
+- **Korg Triton**: Look for "Triton.sf2" or "Korg Triton SoundFont"
+- **Roland JV-1000**: Find "JV1000.sf2" files
+- Many keyboard patches are available online in SF2 format
+
+### Step 2: Batch Render Patches
+
+```bash
+# Install FluidSynth (required for SoundFont rendering)
+# Ubuntu/Debian: sudo apt-get install fluidsynth
+# macOS: brew install fluidsynth
+# Windows: Download from https://www.fluidsynth.org/
+
+# Install Python FluidSynth bindings
+pip install pyfluidsynth
+
+# Render all patches from a SoundFont
+python src/soundfont_renderer.py PSR-2100.sf2 --name PSR-2100
+
+# Render with custom settings
+python src/soundfont_renderer.py Triton.sf2 --name Korg-Triton \
+    --duration 3.0 --note 60 --velocity 100 --max-presets 200
+```
+
+### Step 3: Create Synthesizer Database
+
+```bash
+# Create embeddings for the rendered patches
+python src/synth_db.py embed PSR-2100
+
+# Build FAISS index
+python src/synth_db.py index PSR-2100
+
+# List available synthesizers
+python src/synth_db.py list
+```
+
+### Step 4: Use Synthesizer-Specific Identification
+
+```bash
+# Analyze with PSR-2100 filter
+python src/ui.py cli song.mp3 --synthesizer PSR-2100
+
+# Web interface will automatically show available synthesizers
+python src/ui.py web
+```
+
+### Why This Works Better
+
+- **Exact timbral matches**: Uses the actual synthesizer's sound engine
+- **No physical keyboard needed**: Renders patches programmatically
+- **Complete coverage**: Captures all 200+ patches in minutes
+- **Consistent conditions**: Same note, velocity, and duration for all patches
 
 ## 🛠️ Advanced Usage
 
@@ -240,6 +312,7 @@ pytest tests/ --cov=src --cov-report=html
 - **faiss-cpu**: Fast similarity search
 - **librosa**: Audio processing
 - **spleeter**: Source separation
+- **pyfluidsynth**: SoundFont rendering (optional)
 - **flask**: Web interface
 
 ## 🔍 How It Works
@@ -306,4 +379,18 @@ pip install tensorflow
 python src/ui.py setup
 ```
 
-For more issues, check the [Issues](https://github.com/your-repo/issues) page.
+**FluidSynth errors**:
+```bash
+# Install FluidSynth system package first
+# Ubuntu: sudo apt-get install fluidsynth
+# macOS: brew install fluidsynth
+# Then install Python bindings
+pip install pyfluidsynth
+```
+
+**SoundFont rendering fails**:
+- Ensure SF2 file is valid and not corrupted
+- Try different audio drivers: `--driver pulseaudio` or `--driver alsa`
+- Check FluidSynth installation: `fluidsynth --version`
+
+For more issues, check the [Issues](https://github.com/x15-eth/patchfinder/issues) page.

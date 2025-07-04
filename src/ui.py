@@ -37,7 +37,8 @@ class CLI:
             results = self.identifier.identify_instruments(
                 args.input,
                 use_separation=not args.no_separation,
-                separation_model=args.model
+                separation_model=args.model,
+                synthesizer_filter=getattr(args, 'synthesizer', None)
             )
             
             # Save results if requested
@@ -137,18 +138,22 @@ class WebInterface:
                 # Get options
                 use_separation = request.form.get('use_separation', 'true').lower() == 'true'
                 separation_model = request.form.get('separation_model', '4stems')
-                
+                synthesizer_filter = request.form.get('synthesizer_filter', None)
+                if synthesizer_filter == 'none' or synthesizer_filter == '':
+                    synthesizer_filter = None
+
                 # Save uploaded file
                 filename = secure_filename(file.filename)
                 upload_path = Path('temp') / filename
                 upload_path.parent.mkdir(exist_ok=True)
                 file.save(upload_path)
-                
+
                 # Run analysis
                 results = self.identifier.identify_instruments(
                     str(upload_path),
                     use_separation=use_separation,
-                    separation_model=separation_model
+                    separation_model=separation_model,
+                    synthesizer_filter=synthesizer_filter
                 )
                 
                 # Clean up uploaded file
@@ -162,6 +167,23 @@ class WebInterface:
         @self.app.route('/health')
         def health():
             return jsonify({'status': 'healthy'})
+
+        @self.app.route('/synthesizers')
+        def get_synthesizers():
+            try:
+                synthesizers = self.identifier.list_available_synthesizers()
+                synth_info = []
+                for synth in synthesizers:
+                    info = self.identifier.get_synthesizer_info(synth)
+                    if info:
+                        synth_info.append({
+                            'name': synth,
+                            'patches': info.get('rendered_patches', 0),
+                            'soundfont': info.get('soundfont_path', '')
+                        })
+                return jsonify(synth_info)
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
     
     def run(self, host='127.0.0.1', port=5000, debug=False):
         """Run the Flask web server."""
@@ -220,6 +242,15 @@ def create_html_template():
                     <option value="5stems">5 stems (vocals, drums, bass, piano, other)</option>
                 </select>
             </div>
+
+            <div class="form-group">
+                <label for="synthesizer_filter">Synthesizer Filter (Optional):</label>
+                <select id="synthesizer_filter" name="synthesizer_filter">
+                    <option value="none">All instruments (general database)</option>
+                    <!-- Synthesizer options will be populated by JavaScript -->
+                </select>
+                <small>Filter results to patches from a specific synthesizer model</small>
+            </div>
             
             <button type="submit">Analyze Audio</button>
         </form>
@@ -235,6 +266,34 @@ def create_html_template():
     </div>
 
     <script>
+        // Load available synthesizers on page load
+        async function loadSynthesizers() {
+            try {
+                const response = await fetch('/synthesizers');
+                const synthesizers = await response.json();
+
+                const select = document.getElementById('synthesizer_filter');
+
+                // Clear existing options except the first one
+                while (select.children.length > 1) {
+                    select.removeChild(select.lastChild);
+                }
+
+                // Add synthesizer options
+                synthesizers.forEach(synth => {
+                    const option = document.createElement('option');
+                    option.value = synth.name;
+                    option.textContent = `${synth.name} (${synth.patches} patches)`;
+                    select.appendChild(option);
+                });
+            } catch (error) {
+                console.log('No synthesizers available:', error);
+            }
+        }
+
+        // Load synthesizers when page loads
+        document.addEventListener('DOMContentLoaded', loadSynthesizers);
+
         document.getElementById('uploadForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             
@@ -331,6 +390,9 @@ def main():
                            help='Skip source separation')
     cli_parser.add_argument('--model', choices=['2stems', '4stems', '5stems'],
                            default='4stems', help='Separation model')
+    cli_parser.add_argument('--synthesizer', help='Filter by specific synthesizer (e.g., PSR-2100)')
+    cli_parser.add_argument('--list-synthesizers', action='store_true',
+                           help='List available synthesizers and exit')
     cli_parser.add_argument('--output', help='Output JSON file for results')
     cli_parser.add_argument('--verbose', action='store_true',
                            help='Verbose output')
@@ -348,6 +410,20 @@ def main():
     
     if args.mode == 'cli':
         cli = CLI()
+
+        # Handle list synthesizers
+        if args.list_synthesizers:
+            synthesizers = cli.identifier.list_available_synthesizers()
+            if synthesizers:
+                print("Available synthesizers:")
+                for synth in synthesizers:
+                    info = cli.identifier.get_synthesizer_info(synth)
+                    if info:
+                        print(f"  {synth}: {info.get('rendered_patches', 0)} patches")
+            else:
+                print("No synthesizers found. Use soundfont_renderer.py to create synthesizer databases.")
+            return 0
+
         return cli.run(args)
     
     elif args.mode == 'web':

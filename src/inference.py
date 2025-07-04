@@ -29,6 +29,7 @@ except ImportError:
 
 from separate import AudioSeparator
 from build_index import IndexBuilder
+from synth_db import SynthesizerDatabase
 
 
 class InstrumentIdentifier:
@@ -38,16 +39,17 @@ class InstrumentIdentifier:
         self.data_dir = Path(data_dir)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-        
+
         self.model = None
         self.index = None
         self.labels = None
         self.types = None
         self.metadata = None
-        
+
         self.separator = AudioSeparator(output_dir)
         self.index_builder = IndexBuilder(data_dir)
-        
+        self.synth_db = SynthesizerDatabase(data_dir)
+
         self.sample_rate = 48000  # CLAP expects 48kHz
         self.chunk_duration = 5.0  # seconds
         self.overlap = 0.5  # 50% overlap between chunks
@@ -100,40 +102,55 @@ class InstrumentIdentifier:
         
         return chunks
     
-    def analyze_audio_chunk(self, audio_chunk: np.ndarray, k: int = 5) -> List[Dict[str, Any]]:
+    def analyze_audio_chunk(self, audio_chunk: np.ndarray, k: int = 5,
+                           synthesizer_filter: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Analyze a single audio chunk and return top matches.
-        
+
         Args:
             audio_chunk: Audio chunk to analyze
             k: Number of top matches to return
-            
+            synthesizer_filter: Optional synthesizer name to filter results
+
         Returns:
             List of match results
         """
         if self.model is None:
             self.load_model()
-        if self.index is None:
-            self.load_index()
-        
+
         # Get audio embedding
         embedding = self.model.get_audio_embedding([audio_chunk])
-        
-        # Search index
-        results = self.index_builder.search_index(
-            self.index, embedding[0], self.labels, self.types, k=k
-        )
-        
+
+        # Search synthesizer-specific index if filter is specified
+        if synthesizer_filter:
+            results = self.synth_db.search_synthesizer(
+                synthesizer_filter, embedding[0], k=k
+            )
+            if results is None:
+                print(f"Warning: Synthesizer '{synthesizer_filter}' not found, using general index")
+                synthesizer_filter = None
+
+        # Use general index if no synthesizer filter or synthesizer not found
+        if not synthesizer_filter:
+            if self.index is None:
+                self.load_index()
+
+            results = self.index_builder.search_index(
+                self.index, embedding[0], self.labels, self.types, k=k
+            )
+
         return results
     
-    def analyze_stem(self, audio_file: str, stem_name: str = "full") -> Dict[str, Any]:
+    def analyze_stem(self, audio_file: str, stem_name: str = "full",
+                    synthesizer_filter: Optional[str] = None) -> Dict[str, Any]:
         """
         Analyze a single audio file/stem.
-        
+
         Args:
             audio_file: Path to audio file
             stem_name: Name of the stem (for labeling)
-            
+            synthesizer_filter: Optional synthesizer name to filter results
+
         Returns:
             Analysis results for the stem
         """
@@ -157,7 +174,8 @@ class InstrumentIdentifier:
         all_results = []
         for i, chunk in enumerate(chunks):
             try:
-                chunk_results = self.analyze_audio_chunk(chunk, k=10)
+                chunk_results = self.analyze_audio_chunk(chunk, k=10,
+                                                       synthesizer_filter=synthesizer_filter)
                 all_results.extend(chunk_results)
             except Exception as e:
                 print(f"Error analyzing chunk {i}: {e}")
@@ -240,17 +258,19 @@ class InstrumentIdentifier:
             "match_distribution": match_distribution
         }
     
-    def identify_instruments(self, input_file: str, 
+    def identify_instruments(self, input_file: str,
                            use_separation: bool = True,
-                           separation_model: str = "4stems") -> Dict[str, Any]:
+                           separation_model: str = "4stems",
+                           synthesizer_filter: Optional[str] = None) -> Dict[str, Any]:
         """
         Complete instrument identification pipeline.
-        
+
         Args:
             input_file: Path to input audio file
             use_separation: Whether to use source separation
             separation_model: Spleeter model to use
-            
+            synthesizer_filter: Optional synthesizer name to filter results
+
         Returns:
             Complete analysis results
         """
@@ -264,6 +284,7 @@ class InstrumentIdentifier:
             "input_file": str(input_path),
             "use_separation": use_separation,
             "separation_model": separation_model if use_separation else None,
+            "synthesizer_filter": synthesizer_filter,
             "stems": {}
         }
         
@@ -274,7 +295,7 @@ class InstrumentIdentifier:
                 
                 # Analyze each stem
                 for stem_name, stem_file in stem_files.items():
-                    stem_result = self.analyze_stem(stem_file, stem_name)
+                    stem_result = self.analyze_stem(stem_file, stem_name, synthesizer_filter)
                     results["stems"][stem_name] = stem_result
                 
             except Exception as e:
@@ -284,7 +305,7 @@ class InstrumentIdentifier:
         
         if not use_separation:
             # Analyze full mix
-            full_result = self.analyze_stem(input_file, "full_mix")
+            full_result = self.analyze_stem(input_file, "full_mix", synthesizer_filter)
             results["stems"]["full_mix"] = full_result
         
         # Add summary
@@ -297,6 +318,27 @@ class InstrumentIdentifier:
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
         print(f"Results saved to {output_file}")
+
+    def list_available_synthesizers(self) -> List[str]:
+        """
+        List all available synthesizer databases.
+
+        Returns:
+            List of synthesizer names
+        """
+        return self.synth_db.list_synthesizers()
+
+    def get_synthesizer_info(self, synthesizer_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get information about a specific synthesizer.
+
+        Args:
+            synthesizer_name: Name of the synthesizer
+
+        Returns:
+            Synthesizer information or None if not found
+        """
+        return self.synth_db.get_synthesizer_info(synthesizer_name)
     
     def create_summary(self, stem_results: Dict[str, Any]) -> Dict[str, Any]:
         """
