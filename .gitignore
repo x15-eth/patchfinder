@@ -72,3 +72,6 @@ htmlcov/
 # Flask
 instance/
 .webassets-cache
+
+# External dependencies
+CLAP/
